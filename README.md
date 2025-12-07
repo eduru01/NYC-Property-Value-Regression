@@ -110,4 +110,10 @@ Predictors vary widely by borough:
   - multicollinearity with population density  
   - borough-specific clustering  
   - measurement issues in reported crime data  
-- Predictor importance changes dramatically by borough, showing the NYC housing market is not uniform.  
+- Predictor importance changes dramatically by borough, showing the NYC housing market is not uniform.
+
+---
+## Running & Data Availability
+- Open FinalProject.Rmd in RStudio.
+- Raw datasets are not included in this repository due to file size limitations.
+- All data sources are publicly available and linked in the Data Sources section above.
