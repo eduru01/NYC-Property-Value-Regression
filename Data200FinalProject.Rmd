@@ -1,0 +1,802 @@
+---
+Title:        DATA 200: Data Management and Introduction to R
+Last update:  2025-12-05
+Written by:   Ezey Duru & Lily Davis
+Resources:    go.tufts.edu/R
+---
+
+# Section - read in library
+
+```{r}
+# for each library in vector
+libraries <- c("readr", "readxl", "dplyr", "janitor", "lubridate", "psych", "modelsummary")
+install.packages("readxl")
+load_library <- function(libraries) {
+  for (x in libraries) {
+    if(x %in% installed.packages()) { # check if installed
+      message(x, "is already installed!")
+    } else {
+      install.packages(x)
+      message("installing package", x)
+    }
+    library(x, character.only = TRUE) # load libraries
+  }
+}
+
+load_library(libraries)
+```
+
+Read in files as data frames & Clean the names
+```{r}
+#library(readxl)
+
+
+pop_df <- read_excel("nyc_population.xlsx", sheet = 1 , skip = 4)
+y_zillow_df <- read_csv("zillow.csv")
+licenses_df <- read_csv("licenses.csv")
+grocery_df <- read_csv("grocery.csv")
+subway_df <- read_csv("subway.csv")
+school_df <- read_csv("school.csv")
+crime_df <- read_csv("crime.csv")
+inc_edu_emp <- read_excel("unemployment_income_education.xlsx")
+zip_by_borough_df <- read_csv("zip_by_borough.csv")
+
+# Clean names of the columns, lowercase and underscore instead of space
+pop_df <- clean_names(pop_df)
+y_zillow_df <- clean_names(y_zillow_df)
+licenses_df <- clean_names(licenses_df)
+school_df <- clean_names(school_df)
+crime_df <- clean_names(crime_df)
+zip_by_borough_df <- clean_names(zip_by_borough_df)
+
+
+# Print each data frame
+head(pop_df)
+head(y_zillow_df)
+head(licenses_df)
+head(school_df)
+head(crime_df)
+head(inc_edu_emp)
+
+head(zip_by_borough_df)
+
+```
+
+
+Clean Licenses DF
+```{r}
+#Print column names
+colnames(licenses_df)
+
+# Load dataframe with only columns actually want to keep
+licenses_df <- licenses_df %>% select(license_number, business_unique_id, business_category, license_type, license_status, initial_issuance_date, expiration_date, zip_code, borough)
+#Print df
+head(licenses_df)
+
+# Check for an NA values in data frame
+summary(licenses_df)
+# Descriptive statistics
+describe(licenses_df)
+
+# Understand which column
+```
+
+Subway Stations
+```{r}
+#install.packages("sf")
+
+library(sf)
+library(dplyr)
+
+# subway_df already exists
+
+# Convert stations to sf points
+stations_sf <- st_as_sf(
+  subway_df,
+  coords = c("GTFS Longitude", "GTFS Latitude"),
+  crs = 4326
+)
+
+# ---- Load ZIP boundaries ----
+zips <- st_read("ZIP_CODE_TABULATION_AREAS.shp")
+
+# If ZIP file CRS is missing, assign EPSG:2263
+if (is.na(st_crs(zips))) {
+  st_crs(zips) <- 2263
+}
+
+# Reproject ZIP boundaries to match stations
+zips_4326 <- st_transform(zips, 4326)
+
+# ---- Spatial join ----
+stations_with_zip <- st_join(stations_sf, zips_4326, join = st_intersects)
+
+# ---- Export CSV ----
+stations_with_zip %>%
+  st_drop_geometry() %>%
+  write.csv("subway_stations_with_zip.csv", row.names = FALSE)
+
+
+# Create a new dataframe with number of stations in each unique zipcode
+
+subway_counts <- stations_with_zip %>%
+  st_drop_geometry() %>%              # drop geometry before counting
+  group_by(modzcta) %>%
+  summarise(
+    num_subway_stations = n()
+  )
+
+head(subway_counts)
+```
+Working on Grocery Now
+```{r}
+head(grocery_df)
+
+
+# 1. Extract the valid ZIP codes (MODZCTA) from your shapefile
+nyc_zips <- zips_4326 %>%
+  st_drop_geometry() %>%
+  pull(modzcta) %>%
+  unique()
+
+# 2. Filter grocery stores to only those in NYC ZIP codes
+grocery_nyc <- grocery_df %>%
+  filter(`Zip Code` %in% nyc_zips)
+
+# 3. Count grocery stores per ZIP
+grocery_counts <- grocery_nyc %>%
+  group_by(`Zip Code`) %>%
+  summarise(num_grocery_stores = n()) %>%
+  rename(modzcta = `Zip Code`)
+
+head(grocery_counts)
+
+
+# Join this with the subway stations
+# Make zip codes same type
+subway_counts <- subway_counts %>%
+  mutate(modzcta = as.character(modzcta))
+
+grocery_counts <- grocery_counts %>%
+  mutate(modzcta = as.character(modzcta))
+
+# Join
+zip_level_df <- full_join(subway_counts, grocery_counts, by = "modzcta")
+
+head(zip_level_df)
+```
+
+Look into Zillow data
+```{r}
+head(y_zillow_df)
+
+# Extract the zip codes we actually want (from 5 boroughs)
+nyc_zips <- zips_4326 %>%
+  st_drop_geometry() %>%
+  pull(modzcta) %>%
+  unique()
+
+nyc_zips <- as.character(nyc_zips)   # ensure character!
+
+# Filter the dataset to just NYC zips
+zillow_nyc <- y_zillow_df %>%
+  mutate(region_name = as.character(region_name)) %>%
+  filter(region_name %in% nyc_zips)
+
+head(zillow_nyc)
+
+# Get the columns we want
+cols_2024 <- c(
+  "x2024_01_31", "x2024_02_29", "x2024_03_31", "x2024_04_30",
+  "x2024_05_31", "x2024_06_30", "x2024_07_31", "x2024_08_31",
+  "x2024_09_30", "x2024_10_31", "x2024_11_30", "x2024_12_31"
+)
+
+# get mean for 2024 property value
+zillow_2024_avg <- zillow_nyc %>%
+  rowwise() %>%
+  mutate(avg_property_value_2024 = mean(c_across(all_of(cols_2024)), na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(
+    modzcta = region_name,
+    avg_property_value_2024
+  )
+
+head(zillow_2024_avg)
+
+# Join it to our dataset
+zip_level_df <- zip_level_df %>%
+  full_join(zillow_2024_avg, by = "modzcta")
+
+head(zip_level_df)
+```
+
+Working more on the licenses data
+```{r}
+licenses_clean <- licenses_df %>%
+  mutate(
+    initial_issuance_date = mdy(initial_issuance_date),
+    expiration_date       = mdy(expiration_date),
+
+    # duration in days
+    license_duration_days = as.numeric(expiration_date - initial_issuance_date)
+  ) %>%
+  # remove negative or > 15 years
+  filter(
+    license_duration_days > 0,
+    license_duration_days <= 5475
+  )
+
+# Sort by issuance date
+licenses_sorted <- licenses_clean %>%
+  arrange(initial_issuance_date) %>%
+  mutate(is_first_license = !duplicated(business_unique_id))
+
+# New businesses in 2024
+new_businesses_2024 <- licenses_sorted %>%
+  filter(year(initial_issuance_date) == 2024,
+         is_first_license)
+
+n_new <- nrow(new_businesses_2024)
+n_new
+
+```
+Getting licenses into our new datset
+```{r}
+# Filter new 2024 businesses to NYC ZIPs
+new_biz_2024_nyc <- new_businesses_2024 %>%
+  filter(zip_code %in% nyc_zips)
+
+# Count NEW 2024 businesses per ZIP
+new_biz_by_zip <- new_biz_2024_nyc %>%
+  group_by(zip_code) %>%
+  summarize(num_new_businesses_2024 = n())
+
+# Check if successful
+head(new_biz_by_zip)
+
+# Add to datset
+zip_level_df <- zip_level_df %>%
+  left_join(new_biz_by_zip, by = c("modzcta" = "zip_code"))
+
+head(zip_level_df)
+```
+
+Working on Population data
+```{r}
+# Rename Zip Code column
+pop_df <- pop_df %>%
+  rename(zip_code = name)
+
+# Ensure datatype
+pop_df <- pop_df %>%
+  mutate(zip_code = as.character(zip_code))
+
+# Filter to NYC zips
+pop_nyc <- pop_df %>%
+  filter(zip_code %in% nyc_zips)
+
+# Keep our needed columns
+pop_nyc <- pop_nyc %>%
+  select(zip_code, population)
+
+# Join to our dataset
+zip_level_df <- zip_level_df %>%
+  left_join(pop_nyc, by = c("modzcta" = "zip_code"))
+
+head(zip_level_df)
+```
+School data
+```{r}
+head(school_df)
+
+# Drop non-school institutions
+school_df <- school_df %>%
+  filter(institute_type_description != "BOCES")
+
+# Separate by public and non-public 
+school_df <- school_df %>% mutate(is_public  = ifelse (institute_type_description == "PUBLIC SCHOOLS", 1, 0),
+                                  is_nonpublic = ifelse (institute_type_description %in% c("NON-PUBLIC SCHOOLS", "INDEPENDENT ORGANIZATIONS"), 1, 0))
+
+head(school_df)
+
+# Rename Zip Code column
+school_df <- school_df %>%
+  rename(zip_code = zip)
+
+# Ensure datatype
+school_df <- school_df %>%
+  mutate(zip_code = as.character(zip_code))
+
+# Filter to NYC zips
+school_nyc <- school_df %>%
+  filter(zip_code %in% nyc_zips)
+
+# Count schools per ZIP
+school_counts <- school_nyc %>%
+  group_by(`zip_code`) %>%
+  summarise(
+    num_public_schools = sum(is_public),
+    num_non_public_schools = sum(is_nonpublic),
+    )%>%
+  rename(modzcta = `zip_code`)
+
+head(school_counts)
+
+# Join
+zip_level_df <- zip_level_df %>%
+  left_join(school_counts, by = "modzcta")
+
+head(zip_level_df)
+
+# Create a CSV of datset
+# Assuming 'my_dataframe' is the data frame you want to export
+zip_level_df %>% 
+  write.csv("project1.csv", row.names = FALSE)
+
+```
+
+Crime data cleaning and joining
+```{r}
+# ---- Clean and prepare crime data ----
+crime_df <- crime_df %>%
+  mutate(
+    cmplnt_fr_dt = mdy(cmplnt_fr_dt)   # convert MM/DD/YYYY
+  ) %>%
+  filter(year(cmplnt_fr_dt) == 2024)   # keep only 2024 crimes
+
+names(crime_df)
+
+# Ensure points are in correct geographic form
+crime_sf <- crime_df %>%
+  filter(!is.na(latitude), !is.na(longitude)) %>%
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs = 4326
+  )
+
+# zips already loaded earlier:
+# zips <- st_read("ZIP_CODE_TABULATION_AREAS.shp")
+
+if (is.na(st_crs(zips))) {
+  st_crs(zips) <- 2263
+}
+
+zips_4326 <- st_transform(zips, 4326)
+
+# Join
+crime_with_zip <- st_join(crime_sf, zips_4326, join = st_intersects)
+
+# Count crimes per zip
+crimes_by_zip <- crime_with_zip %>%
+  st_drop_geometry() %>%
+  group_by(modzcta) %>%
+  summarise(num_crimes_2024 = n())
+
+# Join to main dataset
+zip_level_df <- zip_level_df %>%
+  left_join(crimes_by_zip, by = "modzcta")
+
+# Check
+head(zip_level_df)
+```
+Income, Employment, and Edu Cleaning
+```{r}
+# Cleaning rows
+inc_edu_emp_df <- inc_edu_emp[-1, ]
+head(inc_edu_emp_df)
+
+# Cleaning zip code column
+library(stringr)
+
+inc_edu_emp_df <- inc_edu_emp_df %>%
+  mutate(zipcode = str_sub(`Area Name`, -5, -1))
+head(inc_edu_emp_df)
+
+inc_edu_emp_df <- inc_edu_emp_df %>% 
+  select(-`Area Name`)
+
+# Filter zips we want
+inc_edu_emp_nyc <- inc_edu_emp_df %>%
+  filter(zipcode %in% nyc_zips)
+head(inc_edu_emp_nyc)
+
+# Drop Area Name column
+zip_level_df <- zip_level_df %>%
+  left_join(inc_edu_emp_nyc, by = c("modzcta" = "zipcode"))
+head(zip_level_df)
+
+zip_level_df <- clean_names(zip_level_df)
+
+# List all column names in the dataframe
+colnames(zip_level_df)
+
+zip_level_df <- zip_level_df %>%
+  rename(
+    income = median_household_income_in_2023_inflation_adjusted_dollars,
+    bachelor = percent_population_25_years_and_over_bachelors_degree_or_more,
+    unemployed = percent_civilian_population_in_labor_force_16_years_and_over_unemployed
+  )
+
+
+zip_level_df <- zip_level_df %>%
+  mutate(
+    income =
+      as.numeric(income),
+    
+    bachelor =
+      as.numeric(bachelor),
+    
+    unemployed =
+      as.numeric(unemployed)
+  )
+
+```
+
+
+
+Zip Code by Boroughs Cleaning
+```{r}
+
+#Filter to only include 
+# Queens, Brox
+#Kings = Brooklyn 
+#New York = Manhattan 
+#Richmond = Staten Island
+head(zip_by_borough_df)
+
+# Drop duplicates
+zip_by_borough_df <- zip_by_borough_df %>%
+  distinct(zip_code, .keep_all = TRUE)
+
+# Keep only NYC counties and rename to boroughs
+zip_by_borough_filtered_df <- zip_by_borough_df %>%
+  filter(county_name %in% c("Kings", "Bronx", "Queens", "Richmond", "New York")) %>%
+  select(county_name, zip_code) %>%
+  rename(modzcta = zip_code) %>%
+  mutate(
+    modzcta = as.character(modzcta),
+    borough = case_when(
+      county_name == "Kings" ~ "Brooklyn",
+      county_name == "New York" ~ "Manhattan",
+      county_name == "Richmond" ~ "Staten Island",
+      TRUE ~ county_name     # Bronx and Queens stay as-is
+    )
+  )
+
+# Join and KEEP ONLY cleaned borough name
+zip_level_df <- zip_level_df %>%
+  left_join(zip_by_borough_filtered_df, by = "modzcta") %>%
+  select(-county_name)
+
+head(zip_level_df)
+```
+
+
+
+Some additional cleaning 
+```{r}
+# Changing null values to zero when appropriate
+zip_level_df <- zip_level_df %>%
+  mutate(
+    num_subway_stations = replace(num_subway_stations, is.na(num_subway_stations), 0),
+    num_grocery_stores = replace(num_grocery_stores, is.na(num_grocery_stores), 0),
+    num_new_businesses_2024 = replace(num_new_businesses_2024, is.na(num_new_businesses_2024), 0),
+    num_public_schools = replace(num_public_schools, is.na(num_public_schools), 0),
+    num_non_public_schools = replace(num_non_public_schools, is.na(num_non_public_schools), 0)
+  )
+
+# Drop null values from dependent variables (Property Value)
+
+zip_level_df <- zip_level_df %>% filter(!is.na(avg_property_value_2024))
+tail(zip_level_df)
+
+# Convert to csv
+zip_level_df %>% 
+  write.csv("project_NA.csv", row.names = FALSE)
+```
+```{r}
+head(zip_level_df)
+colnames(zip_level_df)
+```
+
+Model 1 - Linear Regression with All Predictors
+```{r}
+# 1. Remove the ZIP code column (it's an ID, not a predictor)
+zip_level_df2 <- zip_level_df %>%
+  select(-modzcta, -borough)   
+# remove zipcode column and borough (for grouping later)
+
+# 2. Fit the linear model
+lin_model <- lm(avg_property_value_2024 ~ ., data = zip_level_df2)
+
+# 3. View results
+summary(lin_model)
+
+# 4. Diagnostic plots
+plot(lin_model)
+
+modelsummary(lin_model, output = "gt")
+
+```
+
+Run a linear regression with only statistically significant variables (DID NOT END UP USING)
+```{r}
+
+model_selected <- lm(
+  avg_property_value_2024 ~ num_grocery_stores +
+    num_new_businesses_2024 + population + num_public_schools +
+    income +
+    bachelor,
+  data = zip_level_df
+)
+
+summary(model_selected)
+
+```
+
+Run it by Borough zip_level_df3
+```{r}
+# 1. Remove ZIP but keep borough name to filter
+zip_level_df3 <- zip_level_df %>%
+  select(-modzcta)  
+
+# 1.5 Split the dat by groups of county name 
+list_of_borough_df <- split(zip_level_df3, zip_level_df3$borough)
+# Now remove county name 
+
+# 2. Fit models per Borough  and drop the borough name
+borough_models <- lapply(list_of_borough_df, function(df) {
+  # Drop borough each time
+  curr_borough_df <- df %>% select(-borough)
+  lm(avg_property_value_2024 ~ ., data = curr_borough_df)
+})
+
+# 2.5 print names of models which is by county
+names(borough_models)
+
+# 3. View results
+summary(borough_models)
+
+# 4. Diagnostic plots
+plot(lin_model)
+
+modelsummary(lin_model, output = "gt")
+
+```
+
+
+```{r}
+# See Staten Island
+summary(borough_models$`Staten Island`)
+
+```
+
+```{r}
+# See Bronx
+summary(borough_models$Bronx)
+
+```
+
+
+```{r}
+# See Queens 
+summary(borough_models$Queens) 
+
+```
+
+
+```{r}
+# See Brooklyn 
+summary(borough_models$Brooklyn) 
+
+```
+
+
+```{r}
+# See Manhattan
+summary(borough_models$Manhattan)
+
+```
+
+```{r}
+options(scipen = 999, digits = 6, big.mark = ",")
+```
+
+Get columns ready for graphing
+```{r}
+pretty_labels <- c(
+  modzcta                 = "ZIP Code",
+  num_subway_stations     = "Number of Subway Stations",
+  num_grocery_stores      = "Number of Grocery Stores",
+  avg_property_value_2024 = "Average Property Value (2024)",
+  num_new_businesses_2024 = "Number of New Businesses (2024)",
+  population              = "Population",
+  num_public_schools      = "Number of Public Schools",
+  num_non_public_schools  = "Number of Non-Public Schools",
+  num_crimes_2024         = "Crime Rate (2024)",
+  income                  = "Median Household Income",
+  bachelor                = "Percent with Bachelor's Degree",
+  unemployed              = "Percent Unemployed",
+  borough                 = "Borough"
+)
+
+```
+
+
+```{r}
+head(zip_level_df3) 
+# Get all column names except the target variable
+library(ggplot2)
+library(stringr)
+library(scales)
+
+predictors <- setdiff(colnames(zip_level_df3), c("avg_property_value_2024", "borough"))
+
+for (pred in predictors) {
+  
+  # Use your custom label
+  pretty_name <- pretty_labels[[pred]]
+  
+  p <- ggplot(zip_level_df3, aes(
+    x = .data[[pred]], 
+    y = avg_property_value_2024, 
+    color = borough
+  )) +
+    geom_point(alpha = 0.9) +
+    geom_smooth(method = "lm", color = "blue") +
+    labs(
+      title = paste("Property Value versus", pretty_name),
+      x = pretty_name,
+      y = "Average Property Value (2024)",
+      color = "Borough"
+    ) +
+    scale_y_continuous(labels = comma) +
+    scale_x_continuous(labels = comma) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+    )
+  
+  print(p)
+}
+
+```
+
+```{r}
+# Distribution of Average property value 
+
+ggplot(zip_level_df, aes(x= avg_property_value_2024)) + 
+  geom_histogram(bins=50, fill= "steelblue", color = "white", alpha = 0.8) +
+  labs (
+    title = "Distribution of Average Property Values (2024)", 
+    x = "Average Property Value (2024)",
+    y = "Count"
+  ) +  scale_x_continuous(labels = comma, n.breaks = 7) + theme_minimal() +
+   theme (plot.title = element_text(hjust = 0.5), face = "bold", size = 16)
+# Distribution of income
+```
+```{r}
+# Distribution of income
+
+ggplot(zip_level_df, aes(x= income)) + 
+  geom_histogram(bins=50, fill= "forestgreen", color = "white", alpha = 0.8) +
+  labs (
+    title = "Distribution of Income", 
+    x = "Income",
+    y = "Count"
+  ) +  scale_x_continuous(labels = comma) +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5), face = "bold", size = 16)
+# Distribution of income
+
+```
+```{r}
+borough_summary <- zip_level_df %>%
+  group_by(borough) %>%
+  summarise(
+    total_grocery_stores = sum(num_grocery_stores, na.rm = TRUE),
+    total_subway_stations = sum(num_subway_stations, na.rm = TRUE),
+    total_new_businesses_2024 = sum(num_new_businesses_2024, na.rm = TRUE),
+    total_crimes_2024 = sum(num_crimes_2024, na.rm = TRUE),
+    total_public_schools = sum(num_public_schools, na.rm = TRUE),
+    total_non_public_schools = sum(num_non_public_schools, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+# bar chart of how different column names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_subway_stations, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total Subway Stations by Borough",
+    x = "Borough",
+    y = "Total Subway Stations",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# bar chart of how different columns names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_grocery_stores, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total Grocery Stores by Borough",
+    x = "Borough",
+    y = "Total Grocery Stores",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# bar chart of how different columns names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_new_businesses_2024, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total New Businessess by Borough",
+    x = "Borough",
+    y = "Total New Businessess",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+
+
+```
+
+```{r}
+# bar chart of how different columns names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_crimes_2024, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total Crimes by Borough",
+    x = "Borough",
+    y = "Total Crimes",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# bar chart of how different columns names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_public_schools, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total Public Schools by Borough",
+    x = "Borough",
+    y = "Total Public Schools",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# bar chart of how different columns names  are distributed across boroughs
+ggplot(borough_summary, aes(x = borough, y = total_non_public_schools, fill = borough)) +
+  geom_col() +
+  labs(
+    title = "Total Non Public Schools by Borough",
+    x = "Borough",
+    y = "Total  Non Public Schools",
+    fill = "Borough"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() + theme (plot.title = element_text(hjust = 0.5))
+```
+The End, Thank you!
+
+
+
+
+
+
+
